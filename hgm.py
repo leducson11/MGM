@@ -25,6 +25,7 @@ from tree import Node
 from utils.common_utils import load_json_file
 from utils.docker_utils import copy_src_files, setup_logger
 from utils.evo_utils import load_hgm_metadata
+from utils.chon_cha import chon_cha_co_toan_tu  # fork m04a
 
 
 def update_metadata(output_dir, n_task_evals):
@@ -455,8 +456,6 @@ def main():
                 node.get_decendant_evals(num_pseudo=opt_cfg.n_pseudo_descendant_evals)
                 for node in nodes
             ]
-            selected_node = nodes[TS_sample(decendant_evals)]
-
         si_cfg = config.self_improve_strategy
 
         def _load_perf(cid):
@@ -470,52 +469,70 @@ def main():
             except Exception:
                 return None
 
-        selected_perf = _load_perf(selected_node.commit_id)
-        selected_submitted = hgm_utils.submitted_task_ids(selected_perf)
-        selected_resolved = hgm_utils.resolved_task_ids(selected_perf)
-        selected_failed = hgm_utils.failed_task_ids(selected_perf)
+        # Fork m04a: khối tính điều kiện A/B/C của mã gốc, gói thành hàm để có thể thử nhiều nút cha
+        # (utils/chon_cha.py). Nội dung giữ nguyên; trả về (weighted, ngữ cảnh dùng ở phần sau).
+        def _dieu_kien(selected_node):
+            selected_perf = _load_perf(selected_node.commit_id)
+            selected_submitted = hgm_utils.submitted_task_ids(selected_perf)
+            selected_resolved = hgm_utils.resolved_task_ids(selected_perf)
+            selected_failed = hgm_utils.failed_task_ids(selected_perf)
 
-        peer_nodes = []
-        if selected_submitted:
-            for node in hgm_utils.nodes.values():
-                if node.id == selected_node.id:
-                    continue
-                if node.commit_id == selected_node.commit_id:
-                    continue
-                if node.commit_id in ("initial", "failed"):
-                    continue
-                if node.num_evals == 0 or not np.isfinite(node.mean_utility):
-                    continue
-                other_perf = _load_perf(node.commit_id)
-                other_submitted = hgm_utils.submitted_task_ids(other_perf)
-                if not other_submitted:
-                    continue
-                common = selected_submitted & other_submitted
-                if not common:
-                    continue
-                other_resolved = hgm_utils.resolved_task_ids(other_perf)
-                candidates = common - (selected_resolved & other_resolved)
-                if candidates:
-                    peer_nodes.append(node)
+            peer_nodes = []
+            if selected_submitted:
+                for node in hgm_utils.nodes.values():
+                    if node.id == selected_node.id:
+                        continue
+                    if node.commit_id == selected_node.commit_id:
+                        continue
+                    if node.commit_id in ("initial", "failed"):
+                        continue
+                    if node.num_evals == 0 or not np.isfinite(node.mean_utility):
+                        continue
+                    other_perf = _load_perf(node.commit_id)
+                    other_submitted = hgm_utils.submitted_task_ids(other_perf)
+                    if not other_submitted:
+                        continue
+                    common = selected_submitted & other_submitted
+                    if not common:
+                        continue
+                    other_resolved = hgm_utils.resolved_task_ids(other_perf)
+                    candidates = common - (selected_resolved & other_resolved)
+                    if candidates:
+                        peer_nodes.append(node)
 
-        c_eligible = len(peer_nodes) > 0
+            c_eligible = len(peer_nodes) > 0
 
-        b_eligible = False
-        b_entries = None
-        if selected_node.num_evals >= si_cfg.strategy_b_min_node_evals:
-            try:
-                b_entries = hgm_utils.choose_two_entries(selected_node.commit_id)
-                b_eligible = True
-            except RuntimeError:
-                pass
+            b_eligible = False
+            b_entries = None
+            if selected_node.num_evals >= si_cfg.strategy_b_min_node_evals:
+                try:
+                    b_entries = hgm_utils.choose_two_entries(selected_node.commit_id)
+                    b_eligible = True
+                except RuntimeError:
+                    pass
 
-        weighted = []
-        if selected_failed:
-            weighted.append((si_cfg.weight_a, "A", {}))
-        if b_eligible:
-            weighted.append((si_cfg.weight_b, "B", {"entries": b_entries}))
-        if c_eligible:
-            weighted.append((si_cfg.weight_c, "C", {}))
+            weighted = []
+            if selected_failed:
+                weighted.append((si_cfg.weight_a, "A", {}))
+            if b_eligible:
+                weighted.append((si_cfg.weight_b, "B", {"entries": b_entries}))
+            if c_eligible:
+                weighted.append((si_cfg.weight_c, "C", {}))
+            ngu_canh = (selected_submitted, selected_resolved, selected_failed, peer_nodes)
+            return weighted, ngu_canh
+
+        selected_node, ket_qua_dk, bo_qua = chon_cha_co_toan_tu(
+            nodes, decendant_evals, _dieu_kien, TS_sample,
+            chon_cha_khac=si_cfg.fallback_parent,
+        )
+        weighted, (selected_submitted, selected_resolved, selected_failed, peer_nodes) = ket_qua_dk
+        if bo_qua and weighted:
+            logger.info(
+                "Fallback parent: skipped %s (no eligible strategy); selected %s after %d resample(s)",
+                ",".join(n.commit_id for n in bo_qua),
+                selected_node.commit_id,
+                len(bo_qua),
+            )
 
         if not weighted:
             logger.info(

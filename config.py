@@ -59,6 +59,9 @@ class SelfImproveStrategyConfig:
     weight_b: float = 0.45
     weight_c: float = 0.45
     strategy_b_min_node_evals: int = 2
+    # Fork m04a (nhóm KPDL): khi nút cha được bốc không có toán tử nào dùng được, bốc lại cha khác
+    # bằng Thompson sampling thay vì quay về đánh giá. Mặc định tắt = đúng hành vi của tác giả.
+    fallback_parent: bool = False
 
 
 @dataclass
@@ -202,6 +205,7 @@ class HGMConfig:
                 'strategy_b_min_node_evals': (
                     self.self_improve_strategy.strategy_b_min_node_evals
                 ),
+                'fallback_parent': self.self_improve_strategy.fallback_parent,
             },
         }
     
