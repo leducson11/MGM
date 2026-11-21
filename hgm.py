@@ -26,6 +26,8 @@ from utils.common_utils import load_json_file
 from utils.docker_utils import copy_src_files, setup_logger
 from utils.evo_utils import load_hgm_metadata
 from utils.chon_cha import chon_cha_co_toan_tu  # fork m04a
+from utils.tien_nghiem_cha import (cong_tien_nghiem, gia_tri_tien_nghiem,  # fork m04a
+                                   la_ung_vien_cha)
 
 
 def update_metadata(output_dir, n_task_evals):
@@ -420,9 +422,11 @@ def main():
         f"Starting HGM run {run_id} with configuration: {config.to_dict()}"
     )
 
-    def TS_sample(evals):
+    def TS_sample(evals, tien_nghiem=None):
         alphas = [1 + np.sum(de) for de in evals]
         betas = [1 + len(de) - np.sum(de) for de in evals]
+        # Fork m04a: tiên nghiệm từ cha (utils/tien_nghiem_cha.py); None = đúng mã gốc.
+        alphas, betas = cong_tien_nghiem(alphas, betas, tien_nghiem)
         if opt_cfg.cool_down:
             alphas = np.array(alphas) * (
                 10000
@@ -446,16 +450,30 @@ def main():
     lock = threading.Lock()
 
     def expand():
+        m_tn = opt_cfg.parent_prior_strength  # fork m04a: 0 = đúng mã gốc
         with lock:
+            # Fork m04a: la_ung_vien_cha với m = 0 đúng là điều kiện gốc
+            # (np.isfinite(node.mean_utility) and node.mean_utility > 0).
             nodes = [
                 node
                 for node in hgm_utils.nodes.values()
-                if np.isfinite(node.mean_utility) and node.mean_utility > 0
+                if la_ung_vien_cha(node, hgm_utils.nodes, m_tn)
             ]
             decendant_evals = [
                 node.get_decendant_evals(num_pseudo=opt_cfg.n_pseudo_descendant_evals)
                 for node in nodes
             ]
+            tn_cha = (
+                [gia_tri_tien_nghiem(node, hgm_utils.nodes, m_tn) for node in nodes]
+                if m_tn > 0 else None
+            )
+        if tn_cha is not None:
+            giu_nho_tn = [n.commit_id for n in nodes if n.num_evals > 0 and np.sum(n.utility_measures) == 0]
+            if giu_nho_tn:
+                logger.info(
+                    "Parent prior: kept %d candidate(s) with 0 successes (m=%s): %s",
+                    len(giu_nho_tn), m_tn, ",".join(giu_nho_tn),
+                )
         si_cfg = config.self_improve_strategy
 
         def _load_perf(cid):
@@ -521,10 +539,18 @@ def main():
             ngu_canh = (selected_submitted, selected_resolved, selected_failed, peer_nodes)
             return weighted, ngu_canh
 
-        selected_node, ket_qua_dk, bo_qua = chon_cha_co_toan_tu(
-            nodes, decendant_evals, _dieu_kien, TS_sample,
-            chon_cha_khac=si_cfg.fallback_parent,
-        )
+        if tn_cha is None:
+            selected_node, ket_qua_dk, bo_qua = chon_cha_co_toan_tu(
+                nodes, decendant_evals, _dieu_kien, TS_sample,
+                chon_cha_khac=si_cfg.fallback_parent,
+            )
+        else:
+            # Fork m04a: mỗi ứng viên mang theo tiên nghiệm của nó, để khi bốc lại trên tập con vẫn khớp.
+            selected_node, ket_qua_dk, bo_qua = chon_cha_co_toan_tu(
+                nodes, list(zip(decendant_evals, tn_cha)), _dieu_kien,
+                lambda ds: TS_sample([d[0] for d in ds], [d[1] for d in ds]),
+                chon_cha_khac=si_cfg.fallback_parent,
+            )
         weighted, (selected_submitted, selected_resolved, selected_failed, peer_nodes) = ket_qua_dk
         if bo_qua and weighted:
             logger.info(
@@ -717,7 +743,13 @@ def main():
             evals = [node.utility_measures for node in nodes]
             if len(evals) == 0:
                 return
-            selected_node = nodes[TS_sample(evals)]
+            if opt_cfg.parent_prior_strength > 0:  # fork m04a: tiên nghiệm từ cha
+                selected_node = nodes[TS_sample(evals, [
+                    gia_tri_tien_nghiem(node, hgm_utils.nodes, opt_cfg.parent_prior_strength)
+                    for node in nodes
+                ])]
+            else:
+                selected_node = nodes[TS_sample(evals)]
             available_tasks = list(
                 [
                     task

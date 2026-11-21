@@ -26,6 +26,9 @@ class OptimizationConfig:
     eval_random_level: float = 1.0
     n_pseudo_descendant_evals: int = 10000
     failed_pool_boost: float = 3.0
+    # Fork m04a (nhóm KPDL): số "bài giả" m của tiên nghiệm từ cha cho Thompson sampling
+    # (utils/tien_nghiem_cha.py). Mặc định 0 = đúng hành vi của tác giả.
+    parent_prior_strength: float = 0.0
 
 
 @dataclass
@@ -182,6 +185,7 @@ class HGMConfig:
                 'eval_random_level': self.optimization.eval_random_level,
                 'n_pseudo_descendant_evals': self.optimization.n_pseudo_descendant_evals,
                 'failed_pool_boost': self.optimization.failed_pool_boost,
+                'parent_prior_strength': self.optimization.parent_prior_strength,
             },
             'execution': {
                 'max_workers': self.execution.max_workers,
